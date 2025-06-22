@@ -1,0 +1,143 @@
+#!/usr/bin/env python
+
+from __future__ import print_function
+
+import os
+import json
+import pickle
+import sys
+import traceback
+
+import pandas as pd
+
+from pprint import pprint
+from time import time
+import logging
+
+import pandas as pd
+import numpy as np
+import os
+#import xgboost as xgb
+from sklearn.model_selection import GridSearchCV
+
+from sklearn.linear_model import LinearRegression #Regresión lineal múltiple
+from sklearn.linear_model import GammaRegressor #Regresión lineal múltiple de familia Gamma
+from sklearn.linear_model import Ridge #Regresión lineal múltiple conregularizado L2
+from sklearn.linear_model import BayesianRidge
+from sklearn.linear_model import SGDRegressor #Regresión lineal múltiple con Stochastic Gradient Descent
+from sklearn.ensemble import RandomForestRegressor #CART Random Forest
+from sklearn.ensemble import GradientBoostingRegressor 
+from sklearn.neural_network import MLPRegressor
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import  AdaBoostRegressor
+from sklearn.feature_selection import RFE
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+import lightgbm as lgb
+
+#funciones iconstruye
+import json
+import csv
+import re
+
+
+#################################################################################################    
+# These are the paths to where SageMaker mounts interesting things in your container.
+
+prefix = '/opt/ml/'
+
+input_path = prefix + 'input/data'
+output_path = os.path.join(prefix, 'output')
+model_path = os.path.join(prefix, 'model')
+param_path = os.path.join(prefix, 'input/config/hyperparameters.json')
+
+# This algorithm has a single channel of input data called 'training'. Since we run in
+# File mode, the input files are copied to the directory specified here.
+channel_name_train='training'
+channel_name_test='test'
+
+training_path = os.path.join(input_path, channel_name_train)
+test_path = os.path.join(input_path, channel_name_test)
+
+
+
+# The function to execute the training.
+def train():
+    print('Starting the training')
+    try:
+        # Read in any hyperparameters that the user passed with the training job
+        with open(param_path, 'r') as tc:
+            trainingParams = json.load(tc)
+        
+        print(training_path)
+        # Take the set of files and read them all into a single pandas dataframe
+        input_files = [ os.path.join(training_path, file) for file in os.listdir(training_path) ]
+        print('reading files')
+        print(input_files[0])
+        print(type(input_files[0]))
+        train_df=pd.read_csv(input_files[0], header=0,encoding="utf-8")
+            
+        input_files = [ os.path.join(test_path, file) for file in os.listdir(test_path) ]
+        print('reading files')
+        print(input_files[0])
+        print(type(input_files[0]))
+        test_df=pd.read_csv(input_files[0], header=0,encoding="utf-8")
+
+        print(train_df.head())
+        print('dimensiones train_df:', len(train_df))
+        print('dimensiones test_df:', len(test_df))
+        if len(input_files) == 0:
+            raise ValueError(('There are no files in {}.\n' +
+                              'This usually indicates that the channel ({}) was incorrectly specified,\n' +
+                              'the data specification in S3 was incorrectly specified or the role specified\n' +
+                              'does not have permission to access the data.').format(training_path, channel_name))
+
+        print('start preprocessing ligthgbm')
+                
+        hyper_params = {
+                            'learning_rate': 0.008,
+                            'subsample': 0.2,
+                            'metric': 'rmse',
+                            'feature_fraction': 0.3,
+                            'bagging_fraction': 0.92,
+                            'bagging_freq': 3,
+                            'boosting':'dart',
+                            'verbose': 0,
+                            "max_depth": 5,
+                            "num_leaves": 30,  
+                            "max_bin": 3,
+                            "num_iterations": 1400,
+                            "n_estimators": 5
+                            }
+                            
+                    
+        gbm = lgb.LGBMRegressor(**hyper_params)
+        x_train=train_df.iloc[:,1:]
+        y_train=train_df.iloc[:,0]
+    
+        x_test=test_df.iloc[:,1:]
+        y_test=test_df.iloc[:,0]
+    
+        model = gbm.fit(x_train, y_train,
+            eval_set=[(x_test, y_test)],
+            early_stopping_rounds=1500)  
+
+        # save the model
+        with open(os.path.join(model_path, 'model-ligthgbm.pkl'), 'wb') as out:
+            pickle.dump(model, out)
+        print('Training complete.')
+    except Exception as e:
+        # Write out an error file. This will be returned as the failureReason in the
+        # DescribeTrainingJob result.
+        trc = traceback.format_exc()
+        with open(os.path.join(output_path, 'failure'), 'w') as s:
+            s.write('Exception during training: ' + str(e) + '\n' + trc)
+        # Printing this causes the exception to be in the training job logs, as well.
+        print('Exception during training: ' + str(e) + '\n' + trc, file=sys.stderr)
+        # A non-zero exit code causes the training job to be marked as Failed.
+        sys.exit(255)
+
+if __name__ == '__main__':
+    train()
+
+    # A zero exit code causes the job to be marked a Succeeded.
+    sys.exit(0)
